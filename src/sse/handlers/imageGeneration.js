@@ -18,14 +18,22 @@ import { saveRequestUsage } from "@/lib/usageDb.js";
 // Providers that don't require credentials (noAuth)
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui"]);
 
-function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint }) {
+function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage }) {
+  if (!usage || typeof usage !== "object") return;
+  const promptTokens = usage.prompt_tokens;
+  const completionTokens = usage.completion_tokens;
+  if (!Number.isSafeInteger(promptTokens) || promptTokens < 0 ||
+      !Number.isSafeInteger(completionTokens) || completionTokens < 0) {
+    return;
+  }
+
   saveRequestUsage({
     provider,
     model,
     connectionId: connectionId || undefined,
     apiKey: apiKey || undefined,
     endpoint: endpoint || null,
-    tokens: { prompt_tokens: 0, completion_tokens: 0 },
+    tokens: usage,
     status: "success",
   }).catch(() => {});
 }
@@ -93,7 +101,6 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       modelInfo: { provider, model },
       credentials: null,
       binaryOutput,
-      onRequestSuccess: () => recordImageRequestUsage({ provider, model, apiKey, endpoint }),
     });
     if (result.success) return result.response;
     return errorResponse(result.status || HTTP_STATUS.BAD_GATEWAY, result.error || "Image generation failed");
@@ -135,14 +142,17 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
           testStatus: "active"
         });
       },
-      onRequestSuccess: async () => {
+      onUsage: (usage) => {
         recordImageRequestUsage({
           provider,
           model,
           connectionId: credentials.connectionId,
           apiKey,
           endpoint,
+          usage,
         });
+      },
+      onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
       }
     });
