@@ -13,9 +13,22 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat } from "open-sse/services/combo.js";
 import * as log from "../utils/logger.js";
+import { saveRequestUsage } from "@/lib/usageDb.js";
 
 // Providers that don't require credentials (noAuth)
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui"]);
+
+function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint }) {
+  saveRequestUsage({
+    provider,
+    model,
+    connectionId: connectionId || undefined,
+    apiKey: apiKey || undefined,
+    endpoint: endpoint || null,
+    tokens: { prompt_tokens: 0, completion_tokens: 0 },
+    status: "success",
+  }).catch(() => {});
+}
 
 /**
  * Handle image generation request
@@ -56,7 +69,7 @@ export async function handleImageGeneration(request) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId }),
+      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname }),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -64,10 +77,10 @@ export async function handleImageGeneration(request) {
     });
   }
 
-  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId });
+  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname });
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId } = {}) {
+async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint } = {}) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
@@ -80,6 +93,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       modelInfo: { provider, model },
       credentials: null,
       binaryOutput,
+      onRequestSuccess: () => recordImageRequestUsage({ provider, model, apiKey, endpoint }),
     });
     if (result.success) return result.response;
     return errorResponse(result.status || HTTP_STATUS.BAD_GATEWAY, result.error || "Image generation failed");
@@ -122,6 +136,13 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
         });
       },
       onRequestSuccess: async () => {
+        recordImageRequestUsage({
+          provider,
+          model,
+          connectionId: credentials.connectionId,
+          apiKey,
+          endpoint,
+        });
         await clearAccountError(credentials.connectionId, credentials, model);
       }
     });
